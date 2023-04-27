@@ -1,0 +1,118 @@
+#  Copyright (c) University College London Hospitals NHS Foundation Trust
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+---
+#cloud-config
+package_upgrade: true
+apt:
+  sources:
+    azure-cli.list:
+      source: deb [arch=amd64]
+        https://packages.microsoft.com/repos/azure-cli/ $RELEASE main
+      keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
+      keyserver: hkp://keyserver.ubuntu.com:80
+    docker.list:
+      source: deb [arch=amd64]
+        https://download.docker.com/linux/ubuntu $RELEASE stable
+      keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+      keyserver: hkp://keyserver.ubuntu.com:80
+
+packages:
+  - docker-ce
+  - docker-ce-cli
+  - azure-cli
+  - build-essential
+
+groups:
+  - docker
+
+system_info:
+  default_user:
+    groups: [sudo, docker]
+
+write_files:
+  - content: |
+      #!/bin/bash
+      set -o errexit
+      set -o pipefail
+      set -o nounset
+
+      # Install Node as the runner user to ensure no permissions errors when installing packages
+      echo "Installing Node.js..."
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+      source ~/.nvm/nvm.sh
+      nvm install node --lts 
+
+      echo "Registering GH runner.."
+
+      GITHUB_RUNNER_NAME=$(hostname)
+      echo "Setting runner name as $GITHUB_RUNNER_NAME"
+
+      # See: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2022-11-28#create-a-registration-token-for-an-organization
+      REGISTRATION_TOKEN=$(curl \
+        -X POST \
+        --verbose \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_RUNNER_TOKEN}" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/orgs/${GITHUB_ORGANIZATION}/actions/runners/registration-token" \
+        | awk '/token/ { gsub(/[",]/,""); print $2}')
+
+      if [ "$REGISTRATION_TOKEN" != "" ]; then
+        echo "Created registration token"
+      else
+        echo "Failed to obtain a registration token. Check the scope of \$GITHUB_RUNNER_TOKEN"
+        exit 1
+      fi
+
+      # See https://docs.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners
+      # The GH_RUNNER_NAME must be unique within the repository.
+      cd /home/runner/actions-runner/
+      ./config.sh \
+        --url "https://github.com/${GITHUB_ORGANIZATION}" \
+        --token "$REGISTRATION_TOKEN" \
+        --name "$GITHUB_RUNNER_NAME" \
+        --labels "${GITHUB_RUNNER_LABEL}" \
+        --unattended \
+        --replace
+
+      # Install as a service and start it
+      sudo ./svc.sh install
+      sudo ./svc.sh start
+
+    path: /start_gh_runner.sh
+    permissions: '0775'
+
+  # An hourly cron job to have docker free disk space
+  - path: /etc/cron.hourly/docker-prune
+    content: |
+      #!/bin/bash
+      set -o errexit
+      used_percent=$(df / --output=pcent | tail -1 | sed 's/[^0-9]//g')
+      echo "Used disk space percent: $${used_percent}"
+      if (( used_percent > 75 )); then
+        echo "Free space too low, pruning..."
+        docker system prune -f
+      fi
+    permissions: '0755'
+
+runcmd:
+  # Download runner and unpack to runner user directory (service will run as user)
+  - export DEBIAN_FRONTEND=noninteractive
+  - mkdir -p /home/runner/actions-runner
+  - curl -o runner.tar.gz -L https://github.com/actions/runner/releases/download/v${GITHUB_RUNNER_VERSION}/actions-runner-linux-x64-${GITHUB_RUNNER_VERSION}.tar.gz
+  - tar xzf runner.tar.gz -C /home/runner/actions-runner
+  - rm runner.tar.gz
+
+  # Run the start runner script as the runner user
+  - su -c /start_gh_runner.sh ${USERNAME}
