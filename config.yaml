@@ -12,9 +12,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 ---
-bootstrap_id: samplebootstrap
+bootstrap_id: bootstrsp
 location: uksouth
-github_organization: a-github-org
+github_organization: slawek-bootstrap-flower-test
 github_runner_version: 2.303.0  # Optional - see: https://github.com/actions/runner/releases/
 github_runner_instances: 1  # Optional
 address_space: 10.0.0.0/24  # Optional
